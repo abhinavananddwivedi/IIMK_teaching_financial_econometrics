@@ -32,11 +32,12 @@ country_set <- c('India', 'China', 'France', 'Germany', 'UK', 'USA',
                  'Brazil', 'Russia')
 
 plot_lifeexp_country_set <- ggplot(data = data_file %>% 
-                                     dplyr::filter(name %in% country_set), 
+                                     dplyr::filter(name %in% c('India', 'China')), 
                                    mapping = aes(x = year, 
-                                                 y = life_expectancy
-                                                 )
+                                                 y = life_expectancy,
+                                                 color = name)
                                    ) +
-  geom_point(mapping = aes(alpha = name)) +
-  geom_line(mapping = aes(linetype = name)) 
+  geom_point(mapping = aes(shape = name)) +
+  geom_line(mapping = aes(linetype = name)) +
+  geom_smooth(method = 'lm')
   
