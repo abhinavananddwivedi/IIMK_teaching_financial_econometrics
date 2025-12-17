@@ -1,412 +1,320 @@
-# Load libraries
+# ============================================================================
+# Illustrating the "No Serial Correlation" Assumption in Time Series Regression
+# ============================================================================
+
+# Load required packages
 library(tidyverse)
-library(patchwork)
-library(corrplot)
+library(lmtest)  # For Durbin-Watson test
+library(gridExtra)  # For arranging plots
 
-# Set seed for reproducibility
-set.seed(123)
+set.seed(42)  # For reproducibility
 
 # ============================================================================
-# SETUP: Create student exam data
+# PART 1: Generate Synthetic Time Series Data
 # ============================================================================
 
-# Parameters
-n_students <- 60
-exams <- c("Midterm", "Quiz1", "Quiz2", "Endterm")
-n_exams <- length(exams)
+n <- 200  # Number of time periods
 
-# Scenario 1: NO CHEATING (No Serial Correlation)
-# ============================================================================
+# Generate independent variable (e.g., advertising expenditure over time)
+X <- 50 + 0.5 * (1:n) + rnorm(n, 0, 5)
 
-# Generate student knowledge levels (fixed characteristic)
-students_no_cheat <- tibble(
-  student_id = 1:n_students,
-  knowledge = rnorm(n_students, mean = 70, sd = 10)  # Fixed ability
+# True parameters
+beta_0 <- 100  # Intercept
+beta_1 <- 2.5  # Slope (true effect of X on Y)
+
+# ----------------------------------------------------------------------------
+# CASE 1: NO SERIAL CORRELATION (Classical Assumption Holds)
+# ----------------------------------------------------------------------------
+
+# Generate i.i.d. errors (no serial correlation)
+epsilon_iid <- rnorm(n, 0, 10)
+
+# Generate Y with no serial correlation in errors
+Y_clean <- beta_0 + beta_1 * X + epsilon_iid
+
+# Create data frame
+data_clean <- data.frame(
+  time = 1:n,
+  X = X,
+  Y = Y_clean,
+  epsilon = epsilon_iid
 )
 
-# Generate exam scores for each exam (knowledge + independent random error)
-exam_data_no_cheat <- expand_grid(
-  student_id = 1:n_students,
-  exam = factor(exams, levels = exams),
-  exam_num = 1:n_exams
-) %>%
-  left_join(students_no_cheat, by = "student_id") %>%
-  mutate(
-    # True score = knowledge + independent random shock each time
-    error = rnorm(n(), mean = 0, sd = 5),  # Independent errors!
-    score = knowledge + error,
-    score = pmin(100, pmax(0, score))  # Bound scores between 0-100
-  )
+# ----------------------------------------------------------------------------
+# CASE 2: SERIAL CORRELATION PRESENT (Assumption Violated)
+# ----------------------------------------------------------------------------
 
-# Scenario 2: WITH CHEATING (Serial Correlation)
-# ============================================================================
+# Generate AR(1) errors: epsilon_t = rho * epsilon_{t-1} + u_t
+rho <- 0.7  # Autocorrelation parameter (positive serial correlation)
+epsilon_ar1 <- numeric(n)
+epsilon_ar1[1] <- rnorm(1, 0, 10)
 
-# Identify cheaters (20% of students cheat persistently)
-n_cheaters <- 12
-cheater_ids <- sample(1:n_students, n_cheaters)
-
-students_with_cheat <- students_no_cheat %>%
-  mutate(
-    is_cheater = student_id %in% cheater_ids,
-    # Cheaters have a persistent "boost" component
-    cheat_boost = ifelse(is_cheater, rnorm(1, mean = 15, sd = 3), 0)
-  )
-
-# Generate exam scores with serial correlation for cheaters
-exam_data_with_cheat <- expand_grid(
-  student_id = 1:n_students,
-  exam = factor(exams, levels = exams),
-  exam_num = 1:n_exams
-) %>%
-  left_join(students_with_cheat, by = "student_id") %>%
-  mutate(
-    # Independent random component (still present)
-    random_error = rnorm(n(), mean = 0, sd = 5),
-    # For cheaters: add persistent boost (creates serial correlation)
-    error = ifelse(is_cheater, cheat_boost + random_error, random_error),
-    score = knowledge + error,
-    score = pmin(100, pmax(0, score))
-  )
-
-# ============================================================================
-# REGRESSION ANALYSIS
-# ============================================================================
-
-# Regression 1: No cheating scenario
-model_no_cheat <- lm(score ~ knowledge, data = exam_data_no_cheat)
-
-exam_data_no_cheat <- exam_data_no_cheat %>%
-  mutate(
-    fitted = predict(model_no_cheat),
-    residual = residuals(model_no_cheat)
-  )
-
-# Regression 2: With cheating scenario
-model_with_cheat <- lm(score ~ knowledge, data = exam_data_with_cheat)
-
-exam_data_with_cheat <- exam_data_with_cheat %>%
-  mutate(
-    fitted = predict(model_with_cheat),
-    residual = residuals(model_with_cheat)
-  )
-
-# Print regression results
-cat("=== SCENARIO 1: NO CHEATING ===\n")
-summary(model_no_cheat)
-
-cat("\n=== SCENARIO 2: WITH CHEATING ===\n")
-summary(model_with_cheat)
-
-# ============================================================================
-# VISUALIZATION 1: Individual Student Trajectories
-# ============================================================================
-
-# Pick a few students to highlight: honest student vs cheater
-honest_student <- setdiff(1:n_students, cheater_ids)[1]
-cheater_student <- cheater_ids[1]
-
-# Plot residuals over time for specific students
-p1 <- exam_data_no_cheat %>%
-  filter(student_id %in% c(honest_student, honest_student + 1, honest_student + 2)) %>%
-  ggplot(aes(x = exam_num, y = residual, color = factor(student_id), group = student_id)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 3) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
-  labs(
-    title = "NO CHEATING: Residuals Are Random 'Coin Flips'",
-    subtitle = "Each exam is an independent draw - no pattern over time",
-    x = "Exam Number",
-    y = "Residual (Actual - Predicted Score)",
-    color = "Student ID"
-  ) +
-  scale_x_continuous(breaks = 1:4, labels = exams) +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-
-p2 <- exam_data_with_cheat %>%
-  filter(student_id %in% cheater_ids[1:3]) %>%
-  ggplot(aes(x = exam_num, y = residual, color = factor(student_id), group = student_id)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 3) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
-  annotate("rect", xmin = 0.5, xmax = 4.5, ymin = 10, ymax = 20, 
-           alpha = 0.1, fill = "red") +
-  annotate("text", x = 2.5, y = 18, 
-           label = "Persistently positive\n(suspiciously lucky!)", 
-           color = "darkred", fontface = "italic") +
-  labs(
-    title = "WITH CHEATING: Residuals Are Persistently Positive",
-    subtitle = "Same students are 'lucky' across all exams - serial correlation!",
-    x = "Exam Number",
-    y = "Residual (Actual - Predicted Score)",
-    color = "Student ID\n(Cheater)"
-  ) +
-  scale_x_continuous(breaks = 1:4, labels = exams) +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-
-print(p1 / p2)
-
-# ============================================================================
-# VISUALIZATION 2: Residual Correlation Matrices
-# ============================================================================
-
-# Create wide format for correlation analysis
-create_residual_matrix <- function(data) {
-  data %>%
-    select(student_id, exam, residual) %>%
-    pivot_wider(names_from = exam, values_from = residual) %>%
-    select(-student_id) %>%
-    as.matrix()
+for (t in 2:n) {
+  epsilon_ar1[t] <- rho * epsilon_ar1[t-1] + rnorm(1, 0, 10)
 }
 
-resid_matrix_no_cheat <- create_residual_matrix(exam_data_no_cheat)
-resid_matrix_with_cheat <- create_residual_matrix(exam_data_with_cheat)
+# Generate Y with serial correlation in errors
+Y_serial <- beta_0 + beta_1 * X + epsilon_ar1
 
-# Calculate correlation matrices
-cor_no_cheat <- cor(resid_matrix_no_cheat)
-cor_with_cheat <- cor(resid_matrix_with_cheat)
-
-# Plot correlation matrices side by side
-par(mfrow = c(1, 2))
-corrplot(cor_no_cheat, method = "color", type = "upper", 
-         title = "NO CHEATING: Low Correlation Across Exams",
-         mar = c(0, 0, 2, 0), tl.col = "black", tl.srt = 45,
-         addCoef.col = "black", number.cex = 0.8,
-         col = colorRampPalette(c("blue", "white", "red"))(200))
-
-corrplot(cor_with_cheat, method = "color", type = "upper",
-         title = "WITH CHEATING: High Correlation Across Exams", 
-         mar = c(0, 0, 2, 0), tl.col = "black", tl.srt = 45,
-         addCoef.col = "black", number.cex = 0.8,
-         col = colorRampPalette(c("blue", "white", "red"))(200))
+# Create data frame
+data_serial <- data.frame(
+  time = 1:n,
+  X = X,
+  Y = Y_serial,
+  epsilon = epsilon_ar1
+)
 
 # ============================================================================
-# VISUALIZATION 3: Autocorrelation Function (ACF) for Specific Students
+# PART 2: Run Regressions
 # ============================================================================
 
-# Calculate autocorrelation for residuals of individual students
-calculate_student_acf <- function(student_data) {
-  student_residuals <- student_data %>% 
-    arrange(exam_num) %>% 
-    pull(residual)
-  
-  if(length(student_residuals) >= 2) {
-    acf_result <- acf(student_residuals, plot = FALSE, lag.max = 2)
-    return(tibble(
-      lag = 1:2,
-      acf = acf_result$acf[2:3]
-    ))
-  } else {
-    return(tibble(lag = numeric(), acf = numeric()))
-  }
-}
+# Regression with clean data (no serial correlation)
+model_clean <- lm(Y ~ X, data = data_clean)
 
-# ACF for honest students
-acf_honest <- exam_data_no_cheat %>%
-  group_by(student_id) %>%
-  group_modify(~ calculate_student_acf(.x)) %>%
-  ungroup() %>%
-  mutate(type = "No Cheating")
+# Regression with serial correlation
+model_serial <- lm(Y ~ X, data = data_serial)
 
-# ACF for cheaters
-acf_cheaters <- exam_data_with_cheat %>%
-  filter(is_cheater) %>%
-  group_by(student_id) %>%
-  group_modify(~ calculate_student_acf(.x)) %>%
-  ungroup() %>%
-  mutate(type = "Cheating")
+# ============================================================================
+# PART 3: Compare Results
+# ============================================================================
 
-# Combine and plot
-acf_comparison <- bind_rows(acf_honest, acf_cheaters)
+cat("\n========================================\n")
+cat("REGRESSION RESULTS COMPARISON\n")
+cat("========================================\n\n")
 
-p3 <- acf_comparison %>%
-  filter(lag == 1) %>%  # Focus on lag-1 autocorrelation
-  ggplot(aes(x = acf, fill = type)) +
-  geom_histogram(bins = 20, alpha = 0.7, position = "identity") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1) +
-  facet_wrap(~ type, ncol = 1) +
+cat("MODEL 1: No Serial Correlation (Assumption Satisfied)\n")
+cat("------------------------------------------------------\n")
+print(summary(model_clean))
+
+cat("\n\nMODEL 2: With Serial Correlation (Assumption Violated)\n")
+cat("--------------------------------------------------------\n")
+print(summary(model_serial))
+
+# Extract residuals
+residuals_clean <- residuals(model_clean)
+residuals_serial <- residuals(model_serial)
+
+# ============================================================================
+# PART 4: Visual Diagnostics
+# ============================================================================
+
+# Plot 1: Residuals over Time (Clean Data)
+p1 <- ggplot(data_clean, aes(x = time, y = residuals_clean)) +
+  geom_line(color = "steelblue", linewidth = 0.8) +
+  geom_point(color = "steelblue", size = 1.5, alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
   labs(
-    title = "Lag-1 Autocorrelation of Residuals",
-    subtitle = "No cheating: centered near 0 | Cheating: shifted positive",
-    x = "Autocorrelation Coefficient (ρ₁)",
-    y = "Number of Students",
-    fill = "Scenario"
+    title = "Residuals: NO Serial Correlation",
+    subtitle = "Random scatter around zero (Good!)",
+    x = "Time",
+    y = "Residuals"
   ) +
-  theme_minimal(base_size = 12) +
-  theme(
-    plot.title = element_text(face = "bold"),
-    legend.position = "none"
-  )
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12))
 
-print(p3)
+# Plot 2: Residuals over Time (Serial Correlation)
+p2 <- ggplot(data_serial, aes(x = time, y = residuals_serial)) +
+  geom_line(color = "darkred", linewidth = 0.8) +
+  geom_point(color = "darkred", size = 1.5, alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals: WITH Serial Correlation",
+    subtitle = "Persistent patterns - residuals cluster together (Bad!)",
+    x = "Time",
+    y = "Residuals"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12))
+
+# Plot 3: ACF for Clean Data
+acf_clean <- acf(residuals_clean, plot = FALSE)
+p3 <- ggplot(data.frame(lag = acf_clean$lag[-1], acf = acf_clean$acf[-1]), 
+             aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_segment(aes(xend = lag, yend = 0), color = "steelblue", linewidth = 1) +
+  geom_hline(yintercept = c(-1.96/sqrt(n), 1.96/sqrt(n)), 
+             linetype = "dashed", color = "blue") +
+  labs(
+    title = "ACF: No Serial Correlation",
+    subtitle = "Spikes stay within confidence bands",
+    x = "Lag",
+    y = "Autocorrelation"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12))
+
+# Plot 4: ACF for Serial Correlation
+acf_serial <- acf(residuals_serial, plot = FALSE)
+p4 <- ggplot(data.frame(lag = acf_serial$lag[-1], acf = acf_serial$acf[-1]), 
+             aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_segment(aes(xend = lag, yend = 0), color = "darkred", linewidth = 1) +
+  geom_hline(yintercept = c(-1.96/sqrt(n), 1.96/sqrt(n)), 
+             linetype = "dashed", color = "blue") +
+  labs(
+    title = "ACF: With Serial Correlation",
+    subtitle = "Spikes exceed confidence bands - clear pattern!",
+    x = "Lag",
+    y = "Autocorrelation"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12))
+
+# Combine plots
+grid.arrange(p1, p2, p3, p4, ncol = 2)
 
 # ============================================================================
-# VISUALIZATION 4: Heatmap of Residuals (All Students × All Exams)
+# PART 5: Formal Tests for Serial Correlation
 # ============================================================================
 
-# Create heatmap data
-create_heatmap <- function(data, title) {
-  data %>%
-    mutate(
-      student_id = factor(student_id),
-      student_id = fct_reorder(student_id, residual, .fun = mean)
-    ) %>%
-    ggplot(aes(x = exam, y = student_id, fill = residual)) +
-    geom_tile(color = "white", linewidth = 0.1) +
-    scale_fill_gradient2(
-      low = "blue", mid = "white", high = "red",
-      midpoint = 0, limits = c(-20, 20),
-      name = "Residual"
-    ) +
-    labs(
-      title = title,
-      x = "Exam",
-      y = "Student ID (ordered by avg residual)"
-    ) +
-    theme_minimal(base_size = 10) +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      plot.title = element_text(face = "bold", size = 12)
-    )
-}
+cat("\n\n========================================\n")
+cat("DURBIN-WATSON TEST FOR SERIAL CORRELATION\n")
+cat("========================================\n\n")
 
-p4 <- create_heatmap(exam_data_no_cheat, 
-                     "NO CHEATING: Random Pattern Across Students & Exams")
-p5 <- create_heatmap(exam_data_with_cheat, 
-                     "WITH CHEATING: Persistent Red (Positive Residuals) for Some Students")
+# Durbin-Watson test for clean data
+cat("Model 1 (No Serial Correlation):\n")
+dw_clean <- dwtest(model_clean)
+print(dw_clean)
+cat("\nInterpretation: DW ≈ 2 suggests no serial correlation\n")
 
-print(p4 / p5)
+cat("\n\nModel 2 (With Serial Correlation):\n")
+dw_serial <- dwtest(model_serial)
+print(dw_serial)
+cat("\nInterpretation: DW << 2 suggests POSITIVE serial correlation\n")
 
 # ============================================================================
-# STATISTICAL TESTS FOR SERIAL CORRELATION
+# PART 6: Demonstrate Impact on Standard Errors
 # ============================================================================
 
-# Durbin-Watson test requires time series structure
-# Calculate DW statistic for a few students
+cat("\n\n========================================\n")
+cat("IMPACT ON INFERENCE\n")
+cat("========================================\n\n")
 
+# Extract standard errors
+se_clean <- summary(model_clean)$coefficients[2, 2]
+se_serial <- summary(model_serial)$coefficients[2, 2]
+
+# Calculate HAC (Heteroskedasticity and Autocorrelation Consistent) standard errors
+# These are "correct" standard errors that account for serial correlation
+library(sandwich)
 library(lmtest)
 
-# Function to test serial correlation for individual student
-test_student_correlation <- function(student_data) {
-  if(nrow(student_data) < 3) return(NA)
-  
-  # Simple regression of residuals on lagged residuals
-  student_data <- student_data %>% arrange(exam_num)
-  
-  # Create lagged residual
-  resid_lag <- c(NA, student_data$residual[1:(nrow(student_data)-1)])
-  
-  # Correlation between residual_t and residual_{t-1}
-  cor(student_data$residual, resid_lag, use = "complete.obs")
-}
+se_serial_hac <- sqrt(vcovHAC(model_serial)[2, 2])
 
-# Test for all students
-correlation_results <- tibble(
-  scenario = c("No Cheating", "With Cheating"),
-  data = list(exam_data_no_cheat, exam_data_with_cheat)
-) %>%
-  mutate(
-    student_cors = map(data, function(df) {
-      df %>%
-        group_by(student_id) %>%
-        summarize(
-          lag1_cor = test_student_correlation(cur_data()),
-          .groups = "drop"
-        )
-    })
-  ) %>%
-  select(-data) %>%
-  unnest(student_cors)
+cat(sprintf("Standard Error for beta_1:\n"))
+cat(sprintf("  Clean data (OLS): %.4f\n", se_clean))
+cat(sprintf("  Serial corr (OLS - WRONG): %.4f\n", se_serial))
+cat(sprintf("  Serial corr (HAC - CORRECT): %.4f\n\n", se_serial_hac))
 
-# Summary statistics
-cat("\n=== SERIAL CORRELATION TEST RESULTS ===\n\n")
-
-correlation_results %>%
-  group_by(scenario) %>%
-  summarize(
-    mean_lag1_cor = mean(lag1_cor, na.rm = TRUE),
-    sd_lag1_cor = sd(lag1_cor, na.rm = TRUE),
-    prop_positive = mean(lag1_cor > 0.3, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  print()
+cat("KEY INSIGHT:\n")
+cat("When serial correlation is present, OLS standard errors are BIASED.\n")
+cat("This leads to incorrect t-statistics and unreliable hypothesis tests!\n")
+cat(sprintf("In this example, OLS underestimates the true SE by %.1f%%\n", 
+            100 * (se_serial_hac - se_serial) / se_serial_hac))
 
 # ============================================================================
-# VISUALIZATION 5: The Money Shot - Side-by-Side Residual Scatter
+# PART 7: Create Comparison Table
 # ============================================================================
 
-# Create lag-1 scatter plots
-create_lag_scatter <- function(data, title) {
-  # Create lagged residuals
-  data_with_lag <- data %>%
-    arrange(student_id, exam_num) %>%
-    group_by(student_id) %>%
-    mutate(residual_lag = lag(residual)) %>%
-    ungroup() %>%
-    filter(!is.na(residual_lag))
-  
-  # Calculate correlation
-  cor_val <- cor(data_with_lag$residual, data_with_lag$residual_lag)
-  
-  ggplot(data_with_lag, aes(x = residual_lag, y = residual)) +
-    geom_point(alpha = 0.4, color = "steelblue") +
-    geom_smooth(method = "lm", se = TRUE, color = "red", linewidth = 1.2) +
-    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
-    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
-    annotate("text", x = Inf, y = Inf, 
-             label = sprintf("ρ = %.3f", cor_val),
-             hjust = 1.1, vjust = 1.5, size = 6, fontface = "bold",
-             color = "darkred") +
-    labs(
-      title = title,
-      x = "Residual at time t-1",
-      y = "Residual at time t",
-      caption = "Each point = one student-exam observation"
-    ) +
-    theme_minimal(base_size = 12) +
-    theme(plot.title = element_text(face = "bold"))
-}
+comparison_table <- data.frame(
+  Characteristic = c(
+    "Coefficient Estimate (β₁)",
+    "OLS Standard Error",
+    "HAC Standard Error",
+    "t-statistic (OLS)",
+    "Durbin-Watson Statistic",
+    "First-order Autocorrelation"
+  ),
+  No_Serial_Correlation = c(
+    sprintf("%.3f", coef(model_clean)[2]),
+    sprintf("%.4f", summary(model_clean)$coefficients[2, 2]),
+    "Not needed",
+    sprintf("%.2f", summary(model_clean)$coefficients[2, 3]),
+    sprintf("%.3f", dw_clean$statistic),
+    sprintf("%.3f", acf(residuals_clean, plot = FALSE)$acf[2])
+  ),
+  With_Serial_Correlation = c(
+    sprintf("%.3f", coef(model_serial)[2]),
+    sprintf("%.4f", summary(model_serial)$coefficients[2, 2]),
+    sprintf("%.4f", se_serial_hac),
+    sprintf("%.2f", summary(model_serial)$coefficients[2, 3]),
+    sprintf("%.3f", dw_serial$statistic),
+    sprintf("%.3f", acf(residuals_serial, plot = FALSE)$acf[2])
+  )
+)
 
-p6 <- create_lag_scatter(exam_data_no_cheat, 
-                         "NO CHEATING: No relationship between consecutive errors")
-p7 <- create_lag_scatter(exam_data_with_cheat,
-                         "WITH CHEATING: Positive correlation - past predicts future!")
-
-print(p6 + p7)
+cat("\n\n========================================\n")
+cat("SUMMARY COMPARISON TABLE\n")
+cat("========================================\n\n")
+print(comparison_table, row.names = FALSE)
 
 # ============================================================================
-# PEDAGOGICAL SUMMARY
+# PART 8: Illustrate the Problem Visually
 # ============================================================================
 
-cat("\n=== PEDAGOGICAL TAKEAWAYS ===\n\n")
-cat("1. NO SERIAL CORRELATION means:\n")
-cat("   - Error at time t tells you NOTHING about error at time t+1\n")
-cat("   - Residuals jump randomly around zero\n")
-cat("   - Correlation ρ ≈ 0\n\n")
+# Create a plot showing how serial correlation creates false precision
+ci_data <- data.frame(
+  Model = rep(c("Clean (OLS)", "Serial Corr (OLS - Wrong)", 
+                "Serial Corr (HAC - Correct)"), each = 2),
+  bound = rep(c("Lower", "Upper"), 3),
+  value = c(
+    coef(model_clean)[2] - 1.96 * summary(model_clean)$coefficients[2, 2],
+    coef(model_clean)[2] + 1.96 * summary(model_clean)$coefficients[2, 2],
+    coef(model_serial)[2] - 1.96 * summary(model_serial)$coefficients[2, 2],
+    coef(model_serial)[2] + 1.96 * summary(model_serial)$coefficients[2, 2],
+    coef(model_serial)[2] - 1.96 * se_serial_hac,
+    coef(model_serial)[2] + 1.96 * se_serial_hac
+  )
+)
 
-cat("2. WITH SERIAL CORRELATION (cheating):\n")
-cat("   - Error at time t PREDICTS error at time t+1\n")
-cat("   - Same students persistently lucky/unlucky\n")
-cat("   - Correlation ρ > 0 (positive serial correlation)\n\n")
+ci_plot <- ci_data %>%
+  pivot_wider(names_from = bound, values_from = value) %>%
+  mutate(point_estimate = coef(c(model_clean, model_serial, model_serial))[c(2, 2, 2)]) %>%
+  ggplot(aes(y = Model, x = point_estimate)) +
+  geom_errorbarh(aes(xmin = Lower, xmax = Upper), height = 0.2, linewidth = 1) +
+  geom_point(size = 3, color = "blue") +
+  geom_vline(xintercept = beta_1, linetype = "dashed", color = "red", linewidth = 1) +
+  annotate("text", x = beta_1, y = 3.5, label = "True β₁", color = "red", size = 4) +
+  labs(
+    title = "95% Confidence Intervals for β₁",
+    subtitle = "Serial correlation makes OLS confidence intervals artificially narrow!",
+    x = "Coefficient Estimate",
+    y = ""
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(size = 11)
+  )
 
-cat("3. Why it matters:\n")
-cat("   - If errors are correlated, standard errors are WRONG\n")
-cat("   - Confidence intervals too narrow\n")
-cat("   - T-statistics too large → false significance\n\n")
+print(ci_plot)
 
-# Calculate impact on standard errors (for illustration)
-# Standard error inflation factor for AR(1) process
-rho_with_cheat <- cor(correlation_results %>% 
-                        filter(scenario == "With Cheating") %>% 
-                        pull(lag1_cor), 
-                      use = "complete.obs")
+# ============================================================================
+# FINAL TAKEAWAYS
+# ============================================================================
 
-inflation_factor <- sqrt((1 + rho_with_cheat) / (1 - rho_with_cheat))
+cat("\n\n========================================\n")
+cat("KEY TAKEAWAYS FOR MBA STUDENTS\n")
+cat("========================================\n\n")
 
-cat(sprintf("4. With ρ = %.3f, true standard errors are %.2fx larger!\n", 
-            mean(correlation_results %>% 
-                   filter(scenario == "With Cheating") %>% 
-                   pull(lag1_cor), na.rm = TRUE),
-            inflation_factor))
+cat("1. WHAT IS SERIAL CORRELATION?\n")
+cat("   - Today's error is correlated with yesterday's error\n")
+cat("   - Errors show persistent patterns over time\n\n")
+
+cat("2. WHY DOES IT MATTER?\n")
+cat("   - OLS coefficient estimates remain unbiased\n")
+cat("   - BUT standard errors become WRONG\n")
+cat("   - This makes hypothesis tests unreliable\n")
+cat("   - You might think results are significant when they're not!\n\n")
+
+cat("3. HOW TO DETECT IT?\n")
+cat("   - Plot residuals over time (look for patterns)\n")
+cat("   - Check ACF plot (spikes beyond confidence bands)\n")
+cat("   - Run Durbin-Watson test (DW ≈ 2 is good, DW << 2 or >> 2 is bad)\n\n")
+
+cat("4. WHAT TO DO ABOUT IT?\n")
+cat("   - Use HAC (robust) standard errors\n")
+cat("   - Include lagged dependent variable\n")
+cat("   - Use time series models (ARIMA, etc.)\n\n")
+
+cat("=========================================\n")
